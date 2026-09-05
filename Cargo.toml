@@ -7,3 +7,7 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-openai = { version = "0.41.3", features = ["chat-completion"] }
+async-trait = "0.1.92"
+dotenvy = "0.15.7"
+microsandbox = "0.6.17"
