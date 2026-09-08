@@ -60,7 +60,7 @@ impl Message {
     pub fn assistant_tool_call(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            role: Role::Tool,
+            role: Role::Assistant,
             content: String::new(),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
