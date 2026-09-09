@@ -45,8 +45,7 @@ async fn main() -> Result<()> {
             &api_key,
             model,
             Some(
-                "你是一个顶尖的自主软件工程师。遇到任何任务，必须通过 bash
-在沙箱中编写代码运行并验证结果。"
+                "你是一个顶尖的自主软件工程师。遇到任何任务，必须通过 bash在沙箱中编写代码运行并验证结果。"
                     .to_string(),
             ),
             &tool_list,
