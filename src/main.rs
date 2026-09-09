@@ -8,7 +8,10 @@ use corvus::{
     tool::Tool,
 };
 use microsandbox::Sandbox;
-use std::sync::Arc;
+use std::{
+    io::{self, Write},
+    sync::Arc,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -55,15 +58,29 @@ async fn main() -> Result<()> {
     let engine = Engine::new(pipeline);
 
     let mut ctx = Context::new();
-    let prompt = "请用 Python 编写一段脚本，计算 1 到 100 之间所有能被 3 整除但不能被 5
-整除的数字之和，执行它并将结果告诉我。";
-    println!("\n[3/4] 用户下达目标:\n\"{}\"", prompt);
-    ctx.push(Message::user(prompt));
+    println!("\n🐦 Corvus 已就绪！输入你的需求（输入 exit或 quit 退出）：");
 
-    println!("\n[4/4] 状态机开始点火运转...");
-    engine.run(&mut ctx).await?;
+    loop {
+        print!("\n>>>");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
 
-    println!("\n正在安全关闭 MicroVM 沙箱...");
+        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
+            print!("再见！正在关闭沙箱...");
+            break;
+        }
+
+        if input.is_empty() {
+            continue;
+        }
+
+        ctx.push(Message::user(input));
+
+        engine.run(&mut ctx).await?;
+    }
+
     sb.stop().await?;
     println!("沙箱已回收。全流程圆满结束！");
 
