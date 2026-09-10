@@ -2,6 +2,7 @@ use anyhow::Result;
 use corvus::{
     engine::Engine,
     message::{Context, Message},
+    observability::init_tracing,
     operations::{inference::InferenceOperation, tool_exec::ToolExecutionOperation},
     pipeline::Operation,
     sandbox::SandboxedBashTool,
@@ -12,16 +13,18 @@ use std::{
     io::{self, Write},
     sync::Arc,
 };
+use tracing::{debug, info, trace};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
+    init_tracing();
 
     println!("==================================================");
     println!("        🦅 Corvus Autonomous Agent 启动中        ");
     println!("==================================================");
 
-    println!("\n[1/4] 启动硬件隔离微虚拟机 (microsandbox)...");
+    info!("\n[1/4] 启动硬件隔离微虚拟机 (microsandbox)...");
 
     let sandbox = Sandbox::builder("corvus-workspace")
         .image("python:3.11-slim")
@@ -30,6 +33,8 @@ async fn main() -> Result<()> {
         .create()
         .await?;
     let sb = Arc::new(sandbox);
+
+    debug!(sandbox = %sb.name(), sandbox_id = %sb.id(), "微虚拟机已就绪");
 
     let bash_tool = Arc::new(SandboxedBashTool::new(sb.clone()));
     let tool_list: Vec<Arc<dyn Tool>> = vec![bash_tool];
@@ -40,7 +45,7 @@ async fn main() -> Result<()> {
         std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| "sk-your-key-here".to_string());
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
 
-    println!("[2/4] 按优先级组装状态机工序流水线...");
+    info!("[2/4] 按优先级组装状态机工序流水线...");
     let pipeline: Vec<Box<dyn Operation>> = vec![
         Box::new(ToolExecutionOperation::new(tool_list.clone())),
         Box::new(InferenceOperation::new(
@@ -67,6 +72,10 @@ async fn main() -> Result<()> {
         io::stdin().read_line(&mut input)?;
         let input = input.trim();
 
+        // 分级记录用户输入：debug 只记长度，trace 才记全文（隐私/长文本友好）
+        debug!(len = input.len(), "读到用户输入");
+        trace!(input = %input, "用户输入全文");
+
         if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
             print!("再见！正在关闭沙箱...");
             break;
@@ -82,6 +91,7 @@ async fn main() -> Result<()> {
     }
 
     sb.stop().await?;
+    info!("沙箱已回收，进程正常退出");
     println!("沙箱已回收。全流程圆满结束！");
 
     Ok(())
