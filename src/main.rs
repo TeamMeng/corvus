@@ -13,7 +13,7 @@ use std::{
     io::{self, Write},
     sync::Arc,
 };
-use tracing::{debug, info, trace};
+use tracing::{Instrument, debug, info, info_span, trace};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -63,6 +63,7 @@ async fn main() -> Result<()> {
     let engine = Engine::new(pipeline);
 
     let mut ctx = Context::new();
+    let mut turn = 0;
     println!("\n🐦 Corvus 已就绪！输入你的需求（输入 exit或 quit 退出）：");
 
     loop {
@@ -87,7 +88,9 @@ async fn main() -> Result<()> {
 
         ctx.push(Message::user(input));
 
-        engine.run(&mut ctx).await?;
+        turn += 1;
+        let turn_span = info_span!("turn", turn);
+        engine.run(&mut ctx).instrument(turn_span).await?;
     }
 
     sb.stop().await?;

@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use anyhow::Result;
+use tracing::{Instrument, debug_span, info, info_span, warn};
 
 pub struct Engine {
     pipeline: Vec<Box<dyn Operation>>,
@@ -28,9 +29,17 @@ impl Engine {
 
     pub async fn step(&self, ctx: &Context) -> Result<Option<StepResult>> {
         for op in &self.pipeline {
-            match op.evaluate(ctx).await? {
-                OperationResult::NotApplicable => continue,
+            let span = debug_span!("operation", op = op.name(), applied = tracing::field::Empty);
+
+            let outcome = op.evaluate(ctx).instrument(span.clone()).await?;
+
+            match outcome {
+                OperationResult::NotApplicable => {
+                    span.record("applied", false);
+                    continue;
+                }
                 OperationResult::Applied(res) => {
+                    span.record("applied", true);
                     return Ok(Some(res));
                 }
             }
@@ -44,14 +53,19 @@ impl Engine {
         loop {
             step_count += 1;
             if step_count > self.max_steps {
-                println!("🛑 [Safety] 触发最大步数熔断，强制终止循环！");
+                warn!(
+                    max_steps = self.max_steps,
+                    "🛑 [Safety] 触发最大步数熔断，强制终止循环！"
+                );
                 break;
             }
 
-            println!("\n━━━━━━━━━ ▶ 第 {} 轮状态机心跳 ━━━━━━━━━", step_count);
+            let step_span = info_span!("step", step = step_count);
+
+            info!(parent: &step_span, "▶ 第 {} 轮状态机心跳", step_count);
 
             let Some(step_result) = self.step(ctx).await? else {
-                println!("状态机无可用工序命中，平稳退出。");
+                info!("状态机无可用工序命中，平稳退出。");
                 break;
             };
 
@@ -65,7 +79,7 @@ impl Engine {
             }
 
             if step_result.yield_turn {
-                println!("━━━━━━━━━ 🏁 任务达成，控制权交还人类 ━━━━━━━━━\n");
+                info!("━━━━━━━━━ 🏁 任务达成，控制权交还人类 ━━━━━━━━━\n");
                 break;
             }
         }
