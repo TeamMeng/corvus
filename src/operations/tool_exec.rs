@@ -1,8 +1,12 @@
 use anyhow::Result;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+use tracing::info;
 
 use crate::{
-    message::{Context, Message, Role},
+    message::{Context, Message, Role, ToolCall},
     pipeline::{
         Effect, Operation,
         OperationResult::{self},
@@ -31,22 +35,13 @@ impl Operation for ToolExecutionOperation {
     }
 
     async fn evaluate(&self, ctx: &Context) -> Result<OperationResult> {
-        let Some(last_msg) = ctx.messages.last() else {
-            return Ok(OperationResult::NotApplicable);
-        };
-
-        let (Role::Assistant, Some(calls)) = (&last_msg.role, &last_msg.tool_calls) else {
-            return Ok(OperationResult::NotApplicable);
-        };
+        let calls = pending_tool_calls(ctx);
 
         if calls.is_empty() {
             return Ok(OperationResult::NotApplicable);
         }
 
-        println!(
-            "⚡ [ToolOp] 命中！捕获到大模型发出的 {} 个工具调用请求",
-            calls.len()
-        );
+        info!("⚡ [ToolOp] 命中！发现 {} 个未应答的工具调用", calls.len());
 
         let mut execution_tasks = Vec::new();
 
@@ -82,6 +77,24 @@ impl Operation for ToolExecutionOperation {
 
         Ok(OperationResult::applied(effects))
     }
+}
+
+fn pending_tool_calls(ctx: &Context) -> Vec<ToolCall> {
+    let answered: HashSet<&str> = ctx
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.as_deref())
+        .collect();
+
+    ctx.messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+        .filter(|call| !answered.contains(call.id.as_str()))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
