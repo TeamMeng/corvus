@@ -3,7 +3,10 @@ use corvus::{
     engine::Engine,
     message::{Context, Message},
     observability::init_tracing,
-    operations::{inference::InferenceOperation, tool_exec::ToolExecutionOperation},
+    operations::{
+        inference::InferenceOperation, tool_approval::ToolApprovalOperation,
+        tool_exec::ToolExecutionOperation,
+    },
     pipeline::Operation,
     sandbox::SandboxedBashTool,
     tool::Tool,
@@ -47,6 +50,7 @@ async fn main() -> Result<()> {
 
     info!("[2/4] 按优先级组装状态机工序流水线...");
     let pipeline: Vec<Box<dyn Operation>> = vec![
+        Box::new(ToolApprovalOperation::new()),
         Box::new(ToolExecutionOperation::new(tool_list.clone())),
         Box::new(InferenceOperation::new(
             &base_url,
@@ -86,11 +90,22 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        ctx.push(Message::user(input));
+        if ctx.awaiting_human_input() {
+            ctx.push(Message::approval_answer(input));
+        } else {
+            ctx.push(Message::user(input));
+        }
 
         turn += 1;
+        let before = ctx.messages.len();
         let turn_span = info_span!("turn", turn);
         engine.run(&mut ctx).instrument(turn_span).await?;
+
+        for message in &ctx.messages[before..] {
+            if message.user_visible && !message.agent_visible {
+                println!("\n{}", message.content);
+            }
+        }
     }
 
     sb.stop().await?;

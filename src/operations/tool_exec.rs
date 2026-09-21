@@ -1,12 +1,9 @@
 use anyhow::Result;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
 use crate::{
-    message::{Context, Message, Role, ToolCall},
+    message::{Context, Message},
     pipeline::{
         Effect, Operation,
         OperationResult::{self},
@@ -35,7 +32,7 @@ impl Operation for ToolExecutionOperation {
     }
 
     async fn evaluate(&self, ctx: &Context) -> Result<OperationResult> {
-        let calls = pending_tool_calls(ctx);
+        let calls = ctx.pending_tool_calls();
 
         if calls.is_empty() {
             return Ok(OperationResult::NotApplicable);
@@ -79,27 +76,9 @@ impl Operation for ToolExecutionOperation {
     }
 }
 
-fn pending_tool_calls(ctx: &Context) -> Vec<ToolCall> {
-    let answered: HashSet<&str> = ctx
-        .messages
-        .iter()
-        .filter(|m| m.role == Role::Tool)
-        .filter_map(|m| m.tool_call_id.as_deref())
-        .collect();
-
-    ctx.messages
-        .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .filter_map(|m| m.tool_calls.as_ref())
-        .flatten()
-        .filter(|call| !answered.contains(call.id.as_str()))
-        .cloned()
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::message::ToolCall;
+    use crate::message::{Role, ToolCall};
 
     use super::*;
 
