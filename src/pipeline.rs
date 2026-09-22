@@ -1,4 +1,7 @@
-use crate::message::{Context, Message};
+use crate::{
+    events::Emitter,
+    message::{Context, Message},
+};
 use anyhow::Result;
 
 #[derive(Debug, Clone)]
@@ -22,7 +25,7 @@ pub enum OperationResult {
 pub trait Operation: Send + Sync {
     fn name(&self) -> &'static str;
 
-    async fn evaluate(&self, ctx: &Context) -> Result<OperationResult>;
+    async fn evaluate(&self, ctx: &Context, emit: &Emitter) -> Result<OperationResult>;
 }
 
 impl OperationResult {
@@ -53,7 +56,8 @@ mod tests {
             "ping_op"
         }
 
-        async fn evaluate(&self, ctx: &Context) -> Result<OperationResult> {
+        async fn evaluate(&self, ctx: &Context, emit: &Emitter) -> Result<OperationResult> {
+            let _ = emit;
             if let Some(last) = ctx.messages.last()
                 && last.content == "ping"
             {
@@ -74,11 +78,11 @@ mod tests {
 
         let mut ctx = Context::new();
         ctx.push(Message::user("Hello"));
-        let res = op.evaluate(&ctx).await?;
+        let res = op.evaluate(&ctx, &Emitter::noop()).await?;
         assert!(matches!(res, OperationResult::NotApplicable));
 
         ctx.push(Message::user("ping"));
-        let res = op.evaluate(&ctx).await?;
+        let res = op.evaluate(&ctx, &Emitter::noop()).await?;
         match res {
             OperationResult::Applied(step_result) => {
                 assert!(step_result.yield_turn);

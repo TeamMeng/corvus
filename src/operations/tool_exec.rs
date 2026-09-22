@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::info;
 
 use crate::{
+    events::{AgentEvent, Emitter},
     message::{Context, Message},
     pipeline::{
         Effect, Operation,
@@ -31,14 +32,14 @@ impl Operation for ToolExecutionOperation {
         "tool_execution"
     }
 
-    async fn evaluate(&self, ctx: &Context) -> Result<OperationResult> {
+    async fn evaluate(&self, ctx: &Context, emit: &Emitter) -> Result<OperationResult> {
         let calls = ctx.pending_tool_calls();
 
         if calls.is_empty() {
             return Ok(OperationResult::NotApplicable);
         }
 
-        info!("⚡ [ToolOp] 命中！发现 {} 个未应答的工具调用", calls.len());
+        info!(calls = calls.len(), "发现未应答的工具调用");
 
         let mut execution_tasks = Vec::new();
 
@@ -46,20 +47,33 @@ impl Operation for ToolExecutionOperation {
             let call_id = call.id.clone();
             let call_name = call.name.clone();
             let call_args = call.arguments.clone();
-
             let tool = self.tools.get(call_name.as_str()).cloned();
+            let emitter = emit.clone();
 
             execution_tasks.push(async move {
+                emitter
+                    .emit(AgentEvent::ToolStarted {
+                        tool: call_name.clone(),
+                        call_id: call_id.clone(),
+                        arguments: call_args.clone(),
+                    })
+                    .await;
+
                 let output = match tool {
-                    Some(t) => {
-                        println!("  -> 启动工具 [{}] (id: {})", call_name, call_id);
-                        match t.execute(&call_args).await {
-                            Ok(res) => res,
-                            Err(e) => format!("工具执行出错: {}", e),
-                        }
-                    }
+                    Some(t) => match t.execute(&call_args).await {
+                        Ok(res) => res,
+                        Err(e) => format!("工具执行出错: {}", e),
+                    },
                     None => format!("错误：未找到名为 '{}' 的工具", call_name),
                 };
+
+                emitter
+                    .emit(AgentEvent::ToolFinished {
+                        tool: call_name,
+                        call_id: call_id.clone(),
+                        output: output.clone(),
+                    })
+                    .await;
 
                 Message::tool_response(call_id, output)
             });
@@ -117,7 +131,7 @@ mod tests {
         };
         ctx.push(Message::assistant_tool_call(vec![tool_call]));
 
-        let result = op.evaluate(&ctx).await?;
+        let result = op.evaluate(&ctx, &Emitter::noop()).await?;
 
         match result {
             OperationResult::Applied(step_res) => {

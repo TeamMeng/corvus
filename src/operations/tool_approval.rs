@@ -1,4 +1,5 @@
 use crate::{
+    events::{AgentEvent, Emitter},
     message::{Context, Message, Role, ToolCall},
     pipeline::{
         Effect, Operation,
@@ -72,7 +73,7 @@ impl Operation for ToolApprovalOperation {
         "tool_approval"
     }
 
-    async fn evaluate(&self, ctx: &Context) -> Result<OperationResult> {
+    async fn evaluate(&self, ctx: &Context, emit: &Emitter) -> Result<OperationResult> {
         // 1. 有未应答的工具调用吗？没有就放行
         let calls = ctx.pending_tool_calls();
 
@@ -106,9 +107,14 @@ impl Operation for ToolApprovalOperation {
             "高危工具调用已暂停，等待人工审批"
         );
 
-        // 5. 第一次遇到 -> 提问并挂起，等人类回话
+        emit.emit(AgentEvent::ApprovalRequested {
+            calls: risky.iter().map(|call| (*call).clone()).collect(),
+        })
+        .await;
+
+        // 5. 第一次遇到 -> 结构化广播已发出，转录里只留一条「等待裁决」的协调记录
         Ok(OperationResult::yielded_with(vec![Effect::AppendMessage(
-            Message::user_only_notification(prompt_text(&risky)),
+            Message::approval_pending(),
         )]))
     }
 }
@@ -131,15 +137,6 @@ fn parse_answer(content: &str) -> bool {
         content.trim().to_ascii_lowercase().as_str(),
         "y" | "yes" | "是" | "允许" | "ok"
     )
-}
-
-fn prompt_text(risky: &[&ToolCall]) -> String {
-    let mut text = String::from("⚠️  检测到高危操作，已暂停执行，等待你裁决：\n");
-    for call in risky {
-        text.push_str(&format!("   • [{}] {}\n", call.name, call.arguments));
-    }
-    text.push_str("\n输入 y 允许执行；其它任意输入均视为拒绝");
-    text
 }
 
 fn denied_effects(risky: &[&ToolCall]) -> Vec<Effect> {
@@ -181,7 +178,7 @@ mod tests {
         ctx.push(Message::assistant_tool_call(vec![safe_call()]));
 
         assert!(matches!(
-            op.evaluate(&ctx).await?,
+            op.evaluate(&ctx, &Emitter::noop()).await?,
             OperationResult::NotApplicable
         ));
         Ok(())
@@ -193,7 +190,7 @@ mod tests {
         let mut ctx = Context::new();
         ctx.push(Message::assistant_tool_call(vec![risky_call()]));
 
-        let OperationResult::Applied(step) = op.evaluate(&ctx).await? else {
+        let OperationResult::Applied(step) = op.evaluate(&ctx, &Emitter::noop()).await? else {
             panic!("高危调用必须触发审批");
         };
 
@@ -201,9 +198,32 @@ mod tests {
         let Effect::AppendMessage(notice) = &step.effects[0] else {
             panic!("应产出一条提问消息");
         };
-        assert!(notice.user_visible, "提问必须让人看见");
+        assert!(!notice.user_visible, "渲染交给前端，转录里不再存渲染文案");
         assert!(!notice.agent_visible, "提问绝不能进入模型上下文");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn risky_call_broadcasts_structured_approval_request() -> Result<()> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let emit = Emitter::new(tx);
+
+        let op = ToolApprovalOperation::new();
+        let mut ctx = Context::new();
+        ctx.push(Message::assistant_tool_call(vec![risky_call()]));
+
+        let _ = op.evaluate(&ctx, &emit).await?;
+
+        // 前端拿到的必须是结构化数据，而不是拼好的文案
+        match rx.try_recv().expect("必须广播审批请求") {
+            AgentEvent::ApprovalRequested { calls } => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "call_rm");
+                assert_eq!(calls[0].name, "bash");
+            }
+            other => panic!("期望 ApprovalRequested，实际得到 {other:?}"),
+        }
         Ok(())
     }
 
@@ -212,11 +232,14 @@ mod tests {
         let op = ToolApprovalOperation::new();
         let mut ctx = Context::new();
         ctx.push(Message::assistant_tool_call(vec![risky_call()]));
-        ctx.push(Message::user_only_notification("⚠️ 等待裁决"));
+        ctx.push(Message::approval_pending());
         ctx.push(Message::approval_answer("y"));
 
         assert!(
-            matches!(op.evaluate(&ctx).await?, OperationResult::NotApplicable),
+            matches!(
+                op.evaluate(&ctx, &Emitter::noop()).await?,
+                OperationResult::NotApplicable
+            ),
             "批准后必须放行给执行工序"
         );
         Ok(())
@@ -227,10 +250,10 @@ mod tests {
         let op = ToolApprovalOperation::new();
         let mut ctx = Context::new();
         ctx.push(Message::assistant_tool_call(vec![risky_call()]));
-        ctx.push(Message::user_only_notification("⚠️ 等待裁决"));
+        ctx.push(Message::approval_pending());
         ctx.push(Message::approval_answer("这是手滑乱敲的内容"));
 
-        let OperationResult::Applied(step) = op.evaluate(&ctx).await? else {
+        let OperationResult::Applied(step) = op.evaluate(&ctx, &Emitter::noop()).await? else {
             panic!("拒绝后必须回填结果");
         };
         assert!(!step.yield_turn, "拒绝后要让模型立刻改道");

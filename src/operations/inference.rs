@@ -13,6 +13,7 @@ use async_openai::{
 use std::sync::Arc;
 
 use crate::{
+    events::Emitter,
     message::{Context, Message, Role, ToolCall},
     pipeline::{Effect, Operation, OperationResult},
     tool::Tool,
@@ -66,11 +67,8 @@ impl Operation for InferenceOperation {
         "inference"
     }
 
-    async fn evaluate(&self, ctx: &Context) -> Result<OperationResult> {
-        println!(
-            "🧠 [InferenceOp] 准备向大模型发起推理请求 (模型: {})...",
-            self.model
-        );
+    async fn evaluate(&self, ctx: &Context, emit: &Emitter) -> Result<OperationResult> {
+        let _ = emit;
 
         let mut api_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
 
@@ -167,8 +165,6 @@ impl Operation for InferenceOperation {
                 })
                 .collect();
 
-            println!("💡 [Agent 思考]: 决定调用工具 (共 {} 个)", calls.len());
-
             let assistant_msg = Message::assistant_tool_call(calls);
 
             return Ok(OperationResult::applied(vec![Effect::AppendMessage(
@@ -177,7 +173,6 @@ impl Operation for InferenceOperation {
         }
 
         let content = msg.content.unwrap_or_default();
-        println!("💬 [Agent 最终回复]:\n{}", content);
 
         let assistant_msg = Message::assistant(content);
         Ok(OperationResult::yielded_with(vec![Effect::AppendMessage(

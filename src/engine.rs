@@ -1,4 +1,5 @@
 use crate::{
+    events::{AgentEvent, Emitter},
     message::Context,
     pipeline::{
         Effect, Operation,
@@ -7,7 +8,7 @@ use crate::{
     },
 };
 use anyhow::Result;
-use tracing::{Instrument, debug_span, info, info_span, warn};
+use tracing::{info, warn};
 
 pub struct Engine {
     pipeline: Vec<Box<dyn Operation>>,
@@ -27,47 +28,42 @@ impl Engine {
         self
     }
 
-    pub async fn step(&self, ctx: &Context) -> Result<Option<StepResult>> {
+    pub async fn step(
+        &self,
+        ctx: &Context,
+        emit: &Emitter,
+    ) -> Result<Option<(&'static str, StepResult)>> {
         for op in &self.pipeline {
-            let span = debug_span!("operation", op = op.name(), applied = tracing::field::Empty);
-
-            let outcome = op.evaluate(ctx).instrument(span.clone()).await?;
-
-            match outcome {
-                OperationResult::NotApplicable => {
-                    span.record("applied", false);
-                    continue;
-                }
-                OperationResult::Applied(res) => {
-                    span.record("applied", true);
-                    return Ok(Some(res));
-                }
+            match op.evaluate(ctx, emit).await? {
+                OperationResult::NotApplicable => continue,
+                OperationResult::Applied(result) => return Ok(Some((op.name(), result))),
             }
         }
         Ok(None)
     }
 
-    pub async fn run(&self, ctx: &mut Context) -> Result<()> {
-        let mut step_count = 0;
+    /// 心跳主循环：驱动 Agent 自主思考与执行，直到交出控制权或熔断。
+    pub async fn run(&self, ctx: &mut Context, emit: &Emitter) -> Result<()> {
+        emit.emit(AgentEvent::RunStarted).await;
+
+        let mut applied = 0;
 
         loop {
-            step_count += 1;
-            if step_count > self.max_steps {
+            if applied > self.max_steps {
                 warn!(
                     max_steps = self.max_steps,
-                    "🛑 [Safety] 触发最大步数熔断，强制终止循环！"
+                    "触发最大步数熔断，强制终止循环！"
                 );
                 break;
             }
 
-            let step_span = info_span!("step", step = step_count);
-
-            info!(parent: &step_span, "▶ 第 {} 轮状态机心跳", step_count);
-
-            let Some(step_result) = self.step(ctx).await? else {
+            let Some((operation, step_result)) = self.step(ctx, emit).await? else {
                 info!("状态机无可用工序命中，平稳退出。");
                 break;
             };
+            applied += 1;
+
+            emit.emit(AgentEvent::OperationApplied { operation }).await;
 
             for effect in step_result.effects {
                 match effect {
@@ -79,11 +75,11 @@ impl Engine {
             }
 
             if step_result.yield_turn {
-                info!("━━━━━━━━━ 🏁 任务达成，控制权交还人类 ━━━━━━━━━\n");
                 break;
             }
         }
 
+        emit.emit(AgentEvent::RunFinished).await;
         Ok(())
     }
 }

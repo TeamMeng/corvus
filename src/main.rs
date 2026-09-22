@@ -1,7 +1,8 @@
 use anyhow::Result;
 use corvus::{
     engine::Engine,
-    message::{Context, Message},
+    events::{AgentEvent, Emitter},
+    message::{Context, Message, Role},
     observability::init_tracing,
     operations::{
         inference::InferenceOperation, tool_approval::ToolApprovalOperation,
@@ -16,7 +17,48 @@ use std::{
     io::{self, Write},
     sync::Arc,
 };
+use tokio::sync::mpsc;
 use tracing::{Instrument, debug, info, info_span, trace};
+
+/// ★ 全程序唯一的渲染函数：把事件翻译成人类可读的输出。
+fn render(event: AgentEvent) {
+    match event {
+        AgentEvent::RunStarted | AgentEvent::RunFinished => {}
+
+        AgentEvent::OperationApplied { operation } => {
+            debug!(operation, "工序命中");
+        }
+
+        AgentEvent::MessageAppended { message } => {
+            // 只渲染「助手说的话」；用户输入终端已回显，工具结果无需刷屏
+            if message.role == Role::Assistant
+                && message.user_visible
+                && !message.content.is_empty()
+            {
+                println!("\n{}", message.content);
+            }
+        }
+
+        AgentEvent::ToolStarted {
+            tool, arguments, ..
+        } => {
+            println!("  ⚡ [{tool}] {arguments}");
+        }
+
+        AgentEvent::ToolFinished { tool, output, .. } => {
+            debug!(tool, output_len = output.len(), "工具返回");
+        }
+
+        AgentEvent::ApprovalRequested { calls } => {
+            let mut text = String::from("\n⚠️  检测到高危操作，已暂停执行，等待你裁决：\n");
+            for call in &calls {
+                text.push_str(&format!("   • [{}] {}\n", call.name, call.arguments));
+            }
+            text.push_str("\n输入 y 允许执行；其它任意输入均视为拒绝");
+            println!("{text}");
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -66,6 +108,9 @@ async fn main() -> Result<()> {
 
     let engine = Engine::new(pipeline);
 
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
+    let emitter = Emitter::new(tx);
+
     let mut ctx = Context::new();
     let mut turn = 0;
     println!("\n🐦 Corvus 已就绪！输入你的需求（输入 exit或 quit 退出）：");
@@ -97,13 +142,23 @@ async fn main() -> Result<()> {
         }
 
         turn += 1;
-        let before = ctx.messages.len();
         let turn_span = info_span!("turn", turn);
-        engine.run(&mut ctx).instrument(turn_span).await?;
 
-        for message in &ctx.messages[before..] {
-            if message.user_visible && !message.agent_visible {
-                println!("\n{}", message.content);
+        // ★ 引擎与渲染在同一任务内用 select! 交错推进：
+        //   事件一产生就立刻画出来（真正的流式），且不需要跨任务同步
+        let run = engine.run(&mut ctx, &emitter).instrument(turn_span);
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                Some(event) = rx.recv() => render(event),
+                result = &mut run => {
+                    result?;
+                    // 排空队列里剩余事件，保证「审批提问」先于下一个提示符出现
+                    while let Ok(event) = rx.try_recv() {
+                        render(event);
+                    }
+                    break;
+                }
             }
         }
     }

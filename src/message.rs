@@ -107,12 +107,31 @@ impl Message {
         }
     }
 
-    /// 人类对「内部审批提问」的答复：只在转录里留痕，既不打印也不喂给模型
+    /// 人类对「内部审批提问」的答复：只在转录里留痕，既不打印也不喂给模型。
+    ///
+    /// `content` 保存人类敲入的原文，由 `ToolApprovalOperation` 解析成裁决结果。
     pub fn approval_answer(content: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             role: Role::User,
             content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            user_visible: false,
+            agent_visible: false,
+        }
+    }
+
+    /// 内部协调记录：某批高危调用正在等待人类裁决。
+    ///
+    /// 落在 2×2 矩阵的「右下象限」——人类看不见、模型也看不见，
+    /// 但它仍是转录里的一等状态：进程重启后依然能还原「在等谁回答」。
+    /// 渲染文案不放在这里，前端从 `AgentEvent::ApprovalRequested` 自行渲染。
+    pub fn approval_pending() -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            role: Role::Assistant,
+            content: "awaiting human approval".to_string(),
             tool_calls: None,
             tool_call_id: None,
             user_visible: false,
