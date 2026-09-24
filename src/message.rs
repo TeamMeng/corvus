@@ -29,7 +29,7 @@ pub struct Message {
     pub agent_visible: bool,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Context {
     pub messages: Vec<Message>,
 }
