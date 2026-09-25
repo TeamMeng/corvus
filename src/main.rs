@@ -273,6 +273,11 @@ async fn main() -> Result<()> {
         warn!(%error, "会话保存失败");
     }
 
+    let total = ctx.total_usage();
+    println!(
+        "\n本次会话累计用量：prompt {} / completion {} / 合计 {} tokens",
+        total.prompt, total.completion, total.total
+    );
     outcome?;
 
     info!(session = %session_id, "沙箱已回收，会话已保存");

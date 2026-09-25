@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::{
     events::Emitter,
-    message::{Context, Message, Role, ToolCall},
+    message::{Context, Message, Role, TokenUsage, ToolCall},
     pipeline::{Effect, Operation, OperationResult},
     tool::Tool,
 };
@@ -142,6 +142,13 @@ impl Operation for InferenceOperation {
             .build()?;
 
         let response = self.client.chat().create(request).await?;
+
+        let usage = response.usage.as_ref().map(|u| TokenUsage {
+            prompt: u.prompt_tokens,
+            completion: u.completion_tokens,
+            total: u.total_tokens,
+        });
+
         let choice = response
             .choices
             .into_iter()
@@ -165,7 +172,10 @@ impl Operation for InferenceOperation {
                 })
                 .collect();
 
-            let assistant_msg = Message::assistant_tool_call(calls);
+            let mut assistant_msg = Message::assistant_tool_call(calls);
+            if let Some(usage) = usage {
+                assistant_msg = assistant_msg.with_usage(usage);
+            }
 
             return Ok(OperationResult::applied(vec![Effect::AppendMessage(
                 assistant_msg,
@@ -174,7 +184,11 @@ impl Operation for InferenceOperation {
 
         let content = msg.content.unwrap_or_default();
 
-        let assistant_msg = Message::assistant(content);
+        let mut assistant_msg = Message::assistant(content);
+        if let Some(usage) = usage {
+            assistant_msg = assistant_msg.with_usage(usage);
+        }
+
         Ok(OperationResult::yielded_with(vec![Effect::AppendMessage(
             assistant_msg,
         )]))

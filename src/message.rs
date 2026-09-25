@@ -25,6 +25,9 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     pub tool_call_id: Option<String>,
 
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
+
     pub user_visible: bool,
     pub agent_visible: bool,
 }
@@ -32,6 +35,13 @@ pub struct Message {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Context {
     pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
 }
 
 impl Message {
@@ -42,6 +52,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
             user_visible: true,
             agent_visible: true,
         }
@@ -54,6 +65,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
             user_visible: true,
             agent_visible: true,
         }
@@ -66,6 +78,7 @@ impl Message {
             content: String::new(),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            usage: None,
             user_visible: true,
             agent_visible: true,
         }
@@ -78,6 +91,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(call_id.into()),
+            usage: None,
             user_visible: true,
             agent_visible: true,
         }
@@ -90,6 +104,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
             user_visible: true,
             agent_visible: false,
         }
@@ -102,6 +117,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
             user_visible: false,
             agent_visible: true,
         }
@@ -117,6 +133,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
             user_visible: false,
             agent_visible: false,
         }
@@ -134,9 +151,15 @@ impl Message {
             content: "awaiting human approval".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
             user_visible: false,
             agent_visible: false,
         }
+    }
+
+    pub fn with_usage(mut self, usage: TokenUsage) -> Self {
+        self.usage = Some(usage);
+        self
     }
 }
 
@@ -189,6 +212,31 @@ impl Context {
             .last()
             .is_some_and(|m| m.role == Role::Assistant && !m.agent_visible)
     }
+
+    pub fn total_usage(&self) -> TokenUsage {
+        self.messages
+            .iter()
+            .filter_map(|m| m.usage)
+            .fold(TokenUsage::default(), |mut acc, u| {
+                acc.accumulate(u);
+                acc
+            })
+    }
+
+    pub fn last_prompt_tokens(&self) -> Option<u32> {
+        self.messages
+            .iter()
+            .rev()
+            .find_map(|m| m.usage.map(|u| u.prompt))
+    }
+}
+
+impl TokenUsage {
+    pub fn accumulate(&mut self, other: TokenUsage) {
+        self.prompt += other.prompt;
+        self.completion += other.completion;
+        self.total += other.total
+    }
 }
 
 #[cfg(test)]
@@ -227,5 +275,31 @@ mod tests {
 
         ctx.push(Message::approval_answer("y"));
         assert!(!ctx.awaiting_human_input());
+    }
+
+    #[test]
+    fn test_usage_accounting() {
+        let mut ctx = Context::new();
+        assert_eq!(ctx.last_prompt_tokens(), None, "没有任何用量时应为 None");
+
+        ctx.push(Message::user("读一下 big.py"));
+        ctx.push(Message::assistant_tool_call(vec![]).with_usage(TokenUsage {
+            prompt: 1000,
+            completion: 50,
+            total: 1050,
+        }));
+        ctx.push(Message::assistant("读完了").with_usage(TokenUsage {
+            prompt: 3000,
+            completion: 20,
+            total: 3020,
+        }));
+        ctx.push(Message::user("谢谢"));
+
+        assert_eq!(ctx.total_usage().total, 4070, "总量 = 各轮之和");
+        assert_eq!(
+            ctx.last_prompt_tokens(),
+            Some(3000),
+            "取最近一条带用量的，而不是最后一条"
+        )
     }
 }
