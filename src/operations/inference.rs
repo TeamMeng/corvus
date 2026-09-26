@@ -11,11 +11,13 @@ use async_openai::{
     },
 };
 use std::sync::Arc;
+use tracing::warn;
 
 use crate::{
     events::Emitter,
     message::{Context, Message, Role, TokenUsage, ToolCall},
     pipeline::{Effect, Operation, OperationResult},
+    provider_error::{self, ErrorKind},
     tool::Tool,
 };
 
@@ -141,7 +143,37 @@ impl Operation for InferenceOperation {
             .tools(self.tools.clone())
             .build()?;
 
-        let response = self.client.chat().create(request).await?;
+        // ★ 上游失败不再让 anyhow 穿透：那会顺着 `?` 一路冒到 main，
+        //   把整个 REPL 打死 —— 一个 402 就够了。
+        //   改成「分类 → 写进转录 → 本轮优雅结束」。
+        //
+        //   唯一例外是「上下文超长」的首次出现：此时不结束本轮，
+        //   让排在前面的压缩工序在同一个回合里自愈（见 CompactionOperation）。
+        let response = match self.client.chat().create(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                let (kind, detail) = provider_error::classify(&error);
+
+                // 自愈只在同时满足两条时才有意义：
+                //   一、转录末尾不是同一个病因 —— 否则说明刚刚那次重试又白跑了
+                //       （典型情形：根本没东西可压，压缩工序拒绝了，一转就回原点）；
+                //   二、手上有新证据 —— 压缩之后既没跑通过、人类也没再说话，
+                //       再压一次用的还是同一份滞后的读数。
+                // 两条都不满足就认输交还人类，不烧一堆注定失败的请求。
+                let self_healing = kind == ErrorKind::ContextLengthExceeded
+                    && ctx.last_error_kind() != Some(ErrorKind::ContextLengthExceeded)
+                    && ctx.has_new_evidence_since_compaction();
+
+                warn!(?kind, self_healing, %detail, "上游调用失败，病因已记入转录");
+
+                let message = Message::error(kind, detail);
+                return Ok(if self_healing {
+                    OperationResult::applied(vec![Effect::AppendMessage(message)])
+                } else {
+                    OperationResult::yielded_with(vec![Effect::AppendMessage(message)])
+                });
+            }
+        };
 
         let usage = response.usage.as_ref().map(|u| TokenUsage {
             prompt: u.prompt_tokens,

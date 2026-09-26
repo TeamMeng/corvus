@@ -10,6 +10,21 @@ pub enum Effect {
     ReplaceConversation(Vec<Message>),
 }
 
+impl Effect {
+    /// 这一步算「有进展」吗？
+    ///
+    /// 只有坏消息（故障记录）不算进展：Agent 反复报错而没有任何产出，
+    /// 就是在空转，越转越贵。判定放在 `Effect` 自己身上，
+    /// 因为“什么算推进一步”是效果的属性，而不是引擎的策略。
+    pub fn is_progress(&self) -> bool {
+        match self {
+            // 整体替换是明确的推进动作（压缩）
+            Effect::ReplaceConversation(_) => true,
+            Effect::AppendMessage(message) => message.error_kind.is_none(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StepResult {
     pub effects: Vec<Effect>,
@@ -69,6 +84,18 @@ mod tests {
 
             Ok(OperationResult::NotApplicable)
         }
+    }
+
+    #[test]
+    fn only_non_fault_messages_count_as_progress() {
+        use crate::provider_error::ErrorKind;
+
+        assert!(Effect::AppendMessage(Message::assistant("hi")).is_progress());
+        assert!(
+            !Effect::AppendMessage(Message::error(ErrorKind::Unknown, "boom")).is_progress(),
+            "反复报错而没有产出 = 空转"
+        );
+        assert!(Effect::ReplaceConversation(vec![]).is_progress());
     }
 
     #[tokio::test]

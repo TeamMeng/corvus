@@ -206,4 +206,28 @@ mod tests {
         assert!(err.contains("schema 版本不匹配"), "实际错误: {err}");
         Ok(())
     }
+
+    /// 兼容性回归：老会话文件里没有 `usage` / `error_kind` 字段，必须仍然能读。
+    ///
+    /// 这也是「什么时候不用升 `SCHEMA_VERSION`」的判据：纯增字段、且旧文件
+    /// 依然可读，就不算破坏性变更（靠 `#[serde(default)]` 兜住）。
+    #[test]
+    fn loads_legacy_session_without_the_new_fields() -> Result<()> {
+        let store = temp_store("legacy");
+        store.prepare("s1")?;
+        fs::write(
+            store.session_path("s1"),
+            br#"{"schema_version":1,"id":"s1","context":{"messages":[
+                {"id":"m1","role":"User","content":"hi",
+                 "tool_calls":null,"tool_call_id":null,
+                 "user_visible":true,"agent_visible":true}]}}"#,
+        )?;
+
+        let ctx = store.load("s1")?;
+        assert_eq!(ctx.messages.len(), 1);
+        assert_eq!(ctx.messages[0].usage, None);
+        assert_eq!(ctx.messages[0].error_kind, None);
+        assert!(ctx.has_new_evidence_since_compaction(), "老会话不可能压过");
+        Ok(())
+    }
 }

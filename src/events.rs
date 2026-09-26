@@ -28,6 +28,11 @@ pub enum AgentEvent {
     },
     /// 需要人类裁决（结构化数据，不含任何渲染文案）
     ApprovalRequested { calls: Vec<ToolCall> },
+    /// 转录被整体替换（压缩的产物）。
+    ///
+    /// 没有它，「历史被静默重写」就完全不可观测 ——
+    /// 人类只会觉得 Agent 突然不记得事了。
+    HistoryReplaced { before: usize, after: usize },
     /// 本轮结束，控制权交还人类
     RunFinished,
 }

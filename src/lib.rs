@@ -4,6 +4,7 @@ pub mod message;
 pub mod observability;
 pub mod operations;
 pub mod pipeline;
+pub mod provider_error;
 pub mod render;
 pub mod sandbox;
 pub mod session;

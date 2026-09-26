@@ -5,8 +5,8 @@ use corvus::{
     message::{Context, Message},
     observability::init_tracing,
     operations::{
-        inference::InferenceOperation, tool_approval::ToolApprovalOperation,
-        tool_exec::ToolExecutionOperation,
+        compaction::CompactionOperation, inference::InferenceOperation,
+        tool_approval::ToolApprovalOperation, tool_exec::ToolExecutionOperation,
     },
     pipeline::Operation,
     render::render_text,
@@ -243,6 +243,10 @@ async fn main() -> Result<()> {
     let pipeline: Vec<Box<dyn Operation>> = vec![
         Box::new(ToolApprovalOperation::new()),
         Box::new(ToolExecutionOperation::new(tool_list.clone())),
+        // ★ 压缩必须排在**工具工序之后、推理工序之前**：
+        //   前面负责把转录推进到合法状态（工具往返成对），否则压缩可能
+        //   切在一次进行中的工具往返中间。
+        Box::new(CompactionOperation::new()),
         Box::new(InferenceOperation::new(
             &base_url,
             &api_key,
